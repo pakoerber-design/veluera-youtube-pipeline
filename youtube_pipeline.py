@@ -143,12 +143,17 @@ def build_video(script, products, tmp):
     except Exception:
         pass
     try:
-        import subprocess
-        result = subprocess.run(["fc-list"], capture_output=True, text=True)
-        fonts = [l.split(":")[1].strip() for l in result.stdout.splitlines() if ":" in l]
-        print(f"  Verfügbare Fonts: {fonts[:10]}")
+        from PIL import ImageFont
+        import os
+        font_dirs = ["/usr/share/fonts", "/usr/local/share/fonts", "/opt/venv/lib"]
+        for d in font_dirs:
+            if os.path.exists(d):
+                for root, dirs, files in os.walk(d):
+                    ttf = [f for f in files if f.endswith(".ttf") or f.endswith(".otf")]
+                    if ttf:
+                        print(f"  Fonts in {root}: {ttf[:5]}")
     except Exception as e:
-        print(f"  Font-Liste Fehler: {e}")
+        print(f"  Font-Debug Fehler: {e}")
     sections = script.get("sections", [])
     if not sections:
         return None
