@@ -137,6 +137,18 @@ def fallback_img(path, title):
 
 def build_video(script, products, tmp):
     import random
+    # Font-Debug: verfügbare Fonts ausgeben
+    try:
+        from moviepy.video.tools.subtitles import SubtitlesClip
+    except Exception:
+        pass
+    try:
+        import subprocess
+        result = subprocess.run(["fc-list"], capture_output=True, text=True)
+        fonts = [l.split(":")[1].strip() for l in result.stdout.splitlines() if ":" in l]
+        print(f"  Verfügbare Fonts: {fonts[:10]}")
+    except Exception as e:
+        print(f"  Font-Liste Fehler: {e}")
     sections = script.get("sections", [])
     if not sections:
         return None
