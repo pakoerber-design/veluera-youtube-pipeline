@@ -1,153 +1,18 @@
-import os, json, time, requests, tempfile, subprocess
-from pathlib import Path
-from datetime import datetime
-
-from moviepy import ImageClip, TextClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
-import moviepy.audio.fx as afx
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from supabase import create_client
-
-# ── ENV ───────────────────────────────────────
-SUPABASE_URL  = os.environ["SUPABASE_URL"]
-SUPABASE_KEY  = os.environ["SUPABASE_SERVICE_KEY"]
-CLAUDE_KEY    = os.environ["ANTHROPIC_API_KEY"]
-YT_REFRESH    = os.environ["YOUTUBE_REFRESH_TOKEN"]
-YT_CLIENT_ID  = os.environ["YOUTUBE_CLIENT_ID"]
-YT_CLIENT_SEC = os.environ["YOUTUBE_CLIENT_SECRET"]
-
-CDN  = "https://img.veluera.beauty/product-images"
-SITE = "https://veluera.beauty/products"
-W, H = 1920, 1080
-
-sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ── TOPICS ────────────────────────────────────
-TOPICS = [
-    {"topic": "Top 10 Luxus-Parfums unter 30 Euro",
-     "category": "Parfum", "max_price": 50,
-     "lang": "de", "audience": "Parfum-Liebhaber, 25-45, DACH"},
-    {"topic": "Best Skincare Routine under 25 Euro",
-     "category": "Hautpflege", "max_price": 40,
-     "lang": "en", "audience": "Skincare enthusiasts, 20-35, EU"},
-    {"topic": "Top 10 Haarpflege Geheimtipps 2026",
-     "category": "Haarpflege", "max_price": 35,
-     "lang": "de", "audience": "Frauen, 25-50, DACH"},
-    {"topic": "Budget Parfums die wie Designer riechen",
-     "category": "Parfum", "max_price": 30,
-     "lang": "de", "audience": "Duft-Einsteiger, 18-35, EU"},
-]
-
-# ── 1: PRODUKTAUSWAHL ─────────────────────────
-def select_products(category, max_price, limit=10):
-    import random
-    r = sb.table("master_products").select(
-        "id,name,brand,category,description,sale_price,ean"
-    ).eq("category", category).lte(
-        "sale_price", max_price
-    ).gte("sale_price", 10).not_.is_("ean", "null").limit(limit * 4).execute()
-    items = r.data or []
-    random.shuffle(items)
-    out = []
-    for p in items:
-        if p.get("ean"):
-            p["title"]         = p.get("name", "")
-            p["image_url"]     = f"{CDN}/{p['ean']}.jpg"
-            p["affiliate_url"] = f"{SITE}/{p['id']}"
-            out.append(p)
-        if len(out) >= limit:
-            break
-    return out
-
-# ── 2: CLAUDE SKRIPT ──────────────────────────
-PROMPT = (
-    "Du bist YouTube-Skript-Autor fuer Veluera Beauty.\n"
-    "Thema: {topic} | Sprache: {lang} | Zielgruppe: {audience}\n"
-    "Produkte: {products_json}\n\n"
-    "Erstelle ein 10-Min Ranking-Video (energetisch, nicht werbend, hohe Retention).\n"
-    "Hook in 15 Sek, offene Loops, Vor- und Nachteile, Ueberraschungsempfehlung, CTA.\n\n"
-    "NUR GUELTIGES JSON (kein Markdown, keine Backticks):\n"
-    '{{"title":"","thumbnail_text":"","hook":"","intro":"",'
-    '"sections":[{{"product_name":"","rank":1,"voiceover":"",'
-    '"onscreen_text":[""],"price_display":"EUR XX"}}],'
-    '"surprise_pick":{{"product_name":"","voiceover":""}},'
-    '"outro":"","youtube_description":"","tags":[""],'
-    '"chapters":[{{"time":"0:00","title":"Intro"}}]}}'
-)
-
-def generate_script(cfg, products):
-    import unicodedata
-
-    def clean(text):
-        if not text:
-            return ""
-        text = text.replace("&amp;", "&").replace("&quot;", '"')
-        text = text.replace("&#39;", "'").replace("&nbsp;", " ")
-        text = unicodedata.normalize("NFKD", text)
-        text = text.encode("ascii", "ignore").decode("ascii")
-        return text.strip()
-
-    prods = [
-        {"title": clean(p.get("name", "")),
-         "brand": clean(p.get("brand", "")),
-         "price": p.get("sale_price", 0),
-         "desc":  clean((p.get("description") or ""))[:120]}
-        for p in products
-    ]
-
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={"x-api-key": CLAUDE_KEY,
-                 "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"},
-        json={"model": "claude-sonnet-4-20250514", "max_tokens": 4000,
-              "messages": [{"role": "user", "content": PROMPT.format(
-                  topic=clean(cfg["topic"]),
-                  lang=cfg["lang"],
-                  audience=cfg["audience"],
-                  products_json=json.dumps(prods, ensure_ascii=True))}]},
-        timeout=120,
-    )
-    if resp.status_code != 200:
-        print(f"Claude API Fehler: {resp.status_code}")
-        print(f"Response: {resp.text[:500]}")
-        resp.raise_for_status()
-    text = resp.json()["content"][0]["text"].strip()
-    if "```" in text:
-        for part in text.split("```"):
-            p = part.lstrip("json").strip()
-            if p.startswith("{"):
-                text = p
-                break
-    return json.loads(text)
-
-# ── 3: VIDEO (moviepy 2.x) ────────────────────
-def fallback_img(path, title):
-    try:
-        from PIL import Image, ImageDraw
-        img = Image.new("RGB", (W, H), (26, 26, 46))
-        ImageDraw.Draw(img).text(
-            (W // 2, H // 2), title[:50], fill=(201, 169, 110), anchor="mm"
-        )
-        img.save(path, "JPEG")
-    except Exception:
-        pass
-
 def build_video(script, products, tmp):
     import random
+    from pathlib import Path as P
+    from PIL import Image, ImageDraw
+
     sections = script.get("sections", [])
     if not sections:
         return None
 
-    dur_per_slide = 8
-    FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"
+    dur_per_slide = 45
+    FONT     = "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"
     FONT_REG = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" \
-               if Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf").exists() \
+               if P("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf").exists() \
                else FONT
 
-    # Produkt-Map: auch nach Teilstring matchen
     def find_product(name):
         name_lower = name.lower().strip()
         for p in products:
@@ -156,31 +21,9 @@ def build_video(script, products, tmp):
                 return p
         return {}
 
-    clips = []
-
-    for i, sec in enumerate(sections):
-        product_name = sec.get("product_name", "")
-        p = find_product(product_name)
-
-        # Produktbild laden
-        path = f"{tmp}/img{i}.jpg"
-        img_loaded = False
-        if p.get("ean"):
-            try:
-                r = requests.get(f"{CDN}/{p['ean']}.jpg", timeout=10)
-                if r.status_code == 200:
-                    Path(path).write_bytes(r.content)
-                    img_loaded = True
-            except Exception:
-                pass
-        if not img_loaded:
-            fallback_img(path, product_name)
-
-        # Basis-Bild — als Hintergrund mit dunklem Overlay
-        from PIL import Image, ImageDraw, ImageFilter
+    def process_image(src_path, out_path):
         try:
-            img = Image.open(path).convert("RGB")
-            # Bild zentriert auf 1920x1080 mit dunklem Rand
+            img = Image.open(src_path).convert("RGB")
             img_ratio = img.width / img.height
             target_ratio = W / H
             if img_ratio > target_ratio:
@@ -189,74 +32,151 @@ def build_video(script, products, tmp):
             else:
                 new_w = W
                 new_h = int(W / img_ratio)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            # Zentriert croppen
+            img  = img.resize((new_w, new_h), Image.LANCZOS)
             left = (new_w - W) // 2
             top  = (new_h - H) // 2
             img  = img.crop((left, top, left + W, top + H))
-            # Dunkles Overlay für Lesbarkeit
-            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 140))
-            img = img.convert("RGBA")
-            img = Image.alpha_composite(img, overlay).convert("RGB")
-            img.save(path, "JPEG", quality=90)
+            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 150))
+            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            img.save(out_path, "JPEG", quality=90)
+            return True
         except Exception as e:
-            print(f"  Bild-Processing skip {i}: {e}")
+            print(f"  Bild-Processing Fehler: {e}")
+            return False
 
-        base   = ImageClip(path).with_duration(dur_per_slide).resized((W, H))
+    clips = []
+
+    # ── INTRO SLIDE ───────────────────────────
+    intro_path = f"{tmp}/intro.jpg"
+    fallback_img(intro_path, script.get("title", "Veluera Beauty"))
+    intro_base = ImageClip(intro_path).with_duration(15).resized((W, H))
+    try:
+        intro_layers = [intro_base]
+        intro_layers.append(TextClip(
+            text=script.get("title", "")[:60],
+            font_size=72, color="white", font=FONT,
+            stroke_color="black", stroke_width=3,
+        ).with_duration(15).with_position(("center", "center")))
+        intro_layers.append(TextClip(
+            text=script.get("hook", "")[:80],
+            font_size=34, color="#c9a96e", font=FONT,
+        ).with_duration(15).with_position(("center", H - 150)))
+        clips.append(CompositeVideoClip(intro_layers, size=(W, H)))
+    except Exception as e:
+        print(f"  Intro skip: {e}")
+        clips.append(intro_base)
+
+    # ── PRODUKT SLIDES ────────────────────────
+    for i, sec in enumerate(sections):
+        product_name = sec.get("product_name", "")
+        p = find_product(product_name)
+
+        # Bild laden und verarbeiten
+        raw_path = f"{tmp}/raw_{i}.jpg"
+        img_path = f"{tmp}/img_{i}.jpg"
+        img_ok = False
+        if p.get("ean"):
+            try:
+                r = requests.get(f"{CDN}/{p['ean']}.jpg", timeout=10)
+                if r.status_code == 200:
+                    Path(raw_path).write_bytes(r.content)
+                    img_ok = process_image(raw_path, img_path)
+            except Exception:
+                pass
+        if not img_ok:
+            fallback_img(img_path, product_name)
+
+        base   = ImageClip(img_path).with_duration(dur_per_slide).resized((W, H))
         layers = [base]
 
         try:
             rank     = sec.get("rank", i + 1)
             name     = product_name[:50]
             price    = p.get("sale_price", 0)
-            brand    = p.get("brand", "")
-            desc     = (p.get("description") or "")[:80]
+            brand    = (p.get("brand") or "").upper()
+            desc     = (p.get("description") or "")[:100]
             onscreen = sec.get("onscreen_text", [])
+            vo_text  = (sec.get("voiceover") or "")[:150]
 
-            # Rang-Badge oben links
+            # Rang oben links
             layers.append(TextClip(
                 text=f"#{rank}",
-                font_size=80, color="#c9a96e", font=FONT,
-            ).with_duration(dur_per_slide).with_position((60, 60)))
+                font_size=90, color="#c9a96e", font=FONT,
+            ).with_duration(dur_per_slide).with_position((60, 50)))
 
-            # Produktname groß unten
+            # Veluera Logo oben rechts
+            layers.append(TextClip(
+                text="veluera.beauty",
+                font_size=28, color="#c9a96e", font=FONT,
+            ).with_duration(dur_per_slide).with_position((W - 320, 60)))
+
+            # Produktname
             layers.append(TextClip(
                 text=name,
-                font_size=58, color="white", font=FONT,
+                font_size=62, color="white", font=FONT,
                 stroke_color="black", stroke_width=2,
-            ).with_duration(dur_per_slide).with_position(("center", H - 280)))
+            ).with_duration(dur_per_slide).with_position(("center", H - 320)))
 
             # Brand
             if brand:
                 layers.append(TextClip(
-                    text=brand.upper(),
-                    font_size=30, color="#c9a96e", font=FONT,
-                ).with_duration(dur_per_slide).with_position(("center", H - 210)))
+                    text=brand,
+                    font_size=32, color="#c9a96e", font=FONT,
+                ).with_duration(dur_per_slide).with_position(("center", H - 248)))
 
             # Preis
             if price and price > 0:
                 layers.append(TextClip(
                     text=f"EUR {price:.2f}",
-                    font_size=44, color="white", font=FONT,
+                    font_size=48, color="white", font=FONT,
                     stroke_color="black", stroke_width=1,
-                ).with_duration(dur_per_slide).with_position(("center", H - 155)))
+                ).with_duration(dur_per_slide).with_position(("center", H - 195)))
 
-            # Onscreen-Text / Beschreibung
-            info_text = onscreen[0] if onscreen else desc
-            if info_text:
+            # Onscreen Info
+            info = onscreen[0] if onscreen else desc
+            if info:
                 layers.append(TextClip(
-                    text=info_text[:80],
-                    font_size=30, color="white", font=FONT_REG,
-                ).with_duration(dur_per_slide).with_position(("center", H - 95)))
+                    text=info[:90],
+                    font_size=28, color="white", font=FONT_REG,
+                ).with_duration(dur_per_slide).with_position(("center", H - 135)))
+
+            # Voiceover-Text als Untertitel
+            if vo_text:
+                layers.append(TextClip(
+                    text=vo_text,
+                    font_size=24, color="#dddddd", font=FONT_REG,
+                ).with_duration(dur_per_slide).with_position(("center", H - 75)))
 
         except Exception as e:
             print(f"  TextClip skip {i}: {e}")
 
         clips.append(CompositeVideoClip(layers, size=(W, H)))
 
+    # ── OUTRO SLIDE ───────────────────────────
+    outro_path = f"{tmp}/outro.jpg"
+    fallback_img(outro_path, "veluera.beauty")
+    outro_base = ImageClip(outro_path).with_duration(20).resized((W, H))
+    try:
+        outro_layers = [outro_base]
+        outro_layers.append(TextClip(
+            text="Alle Deals auf veluera.beauty",
+            font_size=64, color="white", font=FONT,
+            stroke_color="black", stroke_width=2,
+        ).with_duration(20).with_position(("center", H // 2 - 60)))
+        outro_layers.append(TextClip(
+            text="Jetzt abonnieren fuer taeglich neue Beauty Deals!",
+            font_size=36, color="#c9a96e", font=FONT,
+        ).with_duration(20).with_position(("center", H // 2 + 40)))
+        clips.append(CompositeVideoClip(outro_layers, size=(W, H)))
+    except Exception as e:
+        print(f"  Outro skip: {e}")
+        clips.append(outro_base)
+
+    # ── ZUSAMMENFUEHREN ───────────────────────
     video     = concatenate_videoclips(clips, method="compose")
     total_dur = video.duration
 
+    # Musik
     track_num  = random.randint(1, 6)
     music_path = f"/app/music/Track_{track_num}.mp3"
     try:
@@ -271,100 +191,8 @@ def build_video(script, products, tmp):
         print(f"  Musik skip: {e}")
 
     out = f"{tmp}/final.mp4"
-    video.write_videofile(out, fps=24, codec="libx264",
-                          audio_codec="aac", threads=4, logger=None)
+    video.write_videofile(
+        out, fps=24, codec="libx264",
+        audio_codec="aac", threads=4, logger=None
+    )
     return out
-# ── 4: YOUTUBE UPLOAD ─────────────────────────
-def get_youtube_client():
-    creds = Credentials(
-        token=None,
-        refresh_token=YT_REFRESH,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=YT_CLIENT_ID,
-        client_secret=YT_CLIENT_SEC,
-        scopes=["https://www.googleapis.com/auth/youtube.upload"],
-    )
-    creds.refresh(Request())
-    return build("youtube", "v3", credentials=creds)
-
-def yt_description(script, products):
-    desc = script.get("youtube_description", "") + "\n\n"
-    for ch in script.get("chapters", []):
-        desc += f"{ch['time']} {ch['title']}\n"
-    desc += "\nProdukte aus diesem Video\n"
-    for i, p in enumerate(products[:10], 1):
-        desc += f"{i}. {p.get('title','')} — EUR {p.get('sale_price',0):.2f}\n"
-        desc += f"   {p.get('affiliate_url','')}\n"
-    desc += "\nAlle Deals: veluera.beauty\n"
-    return desc[:5000]
-
-def upload_yt(vid_path, script, products):
-    yt  = get_youtube_client()
-    req = yt.videos().insert(
-        part="snippet,status",
-        body={
-            "snippet": {
-                "title":       script.get("title", "")[:100],
-                "description": yt_description(script, products),
-                "tags":        script.get("tags", []),
-                "categoryId":  "26",
-            },
-            "status": {
-                "privacyStatus":          "public",
-                "selfDeclaredMadeForKids": False,
-            },
-        },
-        media_body=MediaFileUpload(
-            vid_path, chunksize=-1, resumable=True, mimetype="video/mp4"
-        ),
-    )
-    resp = None
-    while resp is None:
-        st, resp = req.next_chunk()
-        if st:
-            print(f"  Upload {int(st.progress() * 100)}%")
-    return resp.get("id")
-
-# ── 5: LOGGING ────────────────────────────────
-def log_job(cfg, status, **kwargs):
-    sb.table("video_jobs").insert({
-        "topic":    cfg["topic"],
-        "category": cfg["category"],
-        "lang":     cfg["lang"],
-        "status":   status,
-        **kwargs,
-        "created_at": datetime.utcnow().isoformat(),
-    }).execute()
-
-# ── PIPELINE ──────────────────────────────────
-def run(cfg):
-    print(f"\n{'='*55}\n {cfg['topic']}\n{'='*55}")
-    try:
-        products = select_products(cfg["category"], cfg.get("max_price", 100))
-        assert len(products) >= 5, f"Nur {len(products)} Produkte"
-        print(f"  1/4 Produkte: {len(products)}")
-
-        script = generate_script(cfg, products)
-        print(f"  2/4 Skript: {script.get('title','')[:55]}")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            vid = build_video(script, products, tmp)
-            assert vid, "Video fehlgeschlagen"
-            print("  3/4 Video OK")
-
-            vid_id = upload_yt(vid, script, products)
-            assert vid_id, "Upload fehlgeschlagen"
-
-        url = f"https://youtube.com/watch?v={vid_id}"
-        log_job(cfg, "done", youtube_id=vid_id, video_url=url,
-                title=script.get("title", ""),
-                published_at=datetime.utcnow().isoformat())
-        print(f"  4/4 Fertig: {url}")
-
-    except Exception as e:
-        print(f"  FEHLER: {e}")
-        log_job(cfg, "error", error_message=str(e))
-
-if __name__ == "__main__":
-    hour = datetime.utcnow().hour
-    run(TOPICS[hour // 6 % len(TOPICS)])
