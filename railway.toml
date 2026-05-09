@@ -1,0 +1,8 @@
+[build]
+builder = "NIXPACKS"
+
+[build.nixpacks]
+aptPkgs = ["ffmpeg", "fonts-liberation"]
+
+[deploy]
+startCommand = "python youtube_pipeline.py"
