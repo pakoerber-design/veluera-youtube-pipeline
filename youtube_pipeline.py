@@ -113,7 +113,10 @@ def generate_script(cfg, products):
                   products_json=json.dumps(prods, ensure_ascii=True))}]},
         timeout=120,
     )
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        print(f"Claude API Fehler: {resp.status_code}")
+        print(f"Response: {resp.text[:500]}")
+        resp.raise_for_status()
     text = resp.json()["content"][0]["text"].strip()
     if "```" in text:
         for part in text.split("```"):
