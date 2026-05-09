@@ -180,20 +180,23 @@ def build_video(script, products, tmp):
         base   = ImageClip(path).with_duration(dur_per_slide).resized((W, H))
         layers = [base]
         try:
+           try:
             layers.append(TextClip(
                 text=f"#{sec.get('rank', i+1)}  {sec.get('product_name', '')}",
-                font_size=54, color="white", font="DejaVu-Sans-Bold",
+                font_size=54, color="white",
+                font="/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
                 stroke_color="black", stroke_width=2,
             ).with_duration(dur_per_slide).with_position(("center", H - 180)))
             layers.append(TextClip(
                 text=f"EUR {p.get('sale_price', 0):.2f}",
-                font_size=42, color="#c9a96e", font="DejaVu-Sans-Bold",
+                font_size=42, color="#c9a96e",
+                font="/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
             ).with_duration(dur_per_slide).with_position(("center", H - 110)))
             ot = sec.get("onscreen_text", [])
             if ot:
                 layers.append(TextClip(
-                    text=ot[0][:70], font_size=34,
-                    color="white", font="DejaVu-Sans",
+                    text=ot[0][:70], font_size=34, color="white",
+                    font="/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
                 ).with_duration(dur_per_slide).with_position(("center", 70)))
         except Exception as e:
             print(f"  TextClip skip {i}: {e}")
