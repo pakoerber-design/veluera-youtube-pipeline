@@ -45,7 +45,7 @@ TOPICS = [
 def select_products(category, max_price, limit=10):
     import random
     r = sb.table("master_products").select(
-        "id,title,brand,category,description,sale_price,ean"
+        "id,name,brand,category,description,sale_price,ean"
     ).eq("category", category).lte(
         "sale_price", max_price
     ).gte("sale_price", 10).not_.is_("ean", "null").limit(limit * 4).execute()
@@ -54,6 +54,7 @@ def select_products(category, max_price, limit=10):
     out = []
     for p in items:
         if p.get("ean"):
+            p["title"]         = p.get("name", "")
             p["image_url"]     = f"{CDN}/{p['ean']}.jpg"
             p["affiliate_url"] = f"{SITE}/{p['id']}"
             out.append(p)
