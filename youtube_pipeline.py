@@ -137,23 +137,6 @@ def fallback_img(path, title):
 
 def build_video(script, products, tmp):
     import random
-    # Font-Debug: verfügbare Fonts ausgeben
-    try:
-        from moviepy.video.tools.subtitles import SubtitlesClip
-    except Exception:
-        pass
-    try:
-        from PIL import ImageFont
-        import os
-        font_dirs = ["/usr/share/fonts", "/usr/local/share/fonts", "/opt/venv/lib"]
-        for d in font_dirs:
-            if os.path.exists(d):
-                for root, dirs, files in os.walk(d):
-                    ttf = [f for f in files if f.endswith(".ttf") or f.endswith(".otf")]
-                    if ttf:
-                        print(f"  Fonts in {root}: {ttf[:5]}")
-    except Exception as e:
-        print(f"  Font-Debug Fehler: {e}")
     sections = script.get("sections", [])
     if not sections:
         return None
@@ -161,6 +144,7 @@ def build_video(script, products, tmp):
     dur_per_slide = 6
     pmap  = {p.get("name", ""): p for p in products}
     clips = []
+    FONT  = "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"
 
     for i, sec in enumerate(sections):
         p    = pmap.get(sec.get("product_name", ""), {})
@@ -180,23 +164,19 @@ def build_video(script, products, tmp):
         base   = ImageClip(path).with_duration(dur_per_slide).resized((W, H))
         layers = [base]
         try:
-           try:
             layers.append(TextClip(
                 text=f"#{sec.get('rank', i+1)}  {sec.get('product_name', '')}",
-                font_size=54, color="white",
-                font="/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+                font_size=54, color="white", font=FONT,
                 stroke_color="black", stroke_width=2,
             ).with_duration(dur_per_slide).with_position(("center", H - 180)))
             layers.append(TextClip(
                 text=f"EUR {p.get('sale_price', 0):.2f}",
-                font_size=42, color="#c9a96e",
-                font="/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+                font_size=42, color="#c9a96e", font=FONT,
             ).with_duration(dur_per_slide).with_position(("center", H - 110)))
             ot = sec.get("onscreen_text", [])
             if ot:
                 layers.append(TextClip(
-                    text=ot[0][:70], font_size=34, color="white",
-                    font="/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+                    text=ot[0][:70], font_size=34, color="white", font=FONT,
                 ).with_duration(dur_per_slide).with_position(("center", 70)))
         except Exception as e:
             print(f"  TextClip skip {i}: {e}")
@@ -205,7 +185,6 @@ def build_video(script, products, tmp):
     video     = concatenate_videoclips(clips, method="compose")
     total_dur = video.duration
 
-    # Zufälligen Musik-Track wählen
     track_num  = random.randint(1, 6)
     music_path = f"/app/music/Track_{track_num}.mp3"
     try:
