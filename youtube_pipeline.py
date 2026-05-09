@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 
 from moviepy import ImageClip, TextClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips
+import moviepy.audio.fx as afx
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -184,14 +185,15 @@ def fallback_img(path, title):
     except Exception:
         pass
 
-def build_video(script, products, vo_path, tmp):
+def build_video(script, products, tmp):
+    import random
     sections = script.get("sections", [])
     if not sections:
         return None
-    audio   = AudioFileClip(vo_path)
-    dur     = audio.duration / len(sections)
-    pmap    = {p.get("title", ""): p for p in products}
-    clips   = []
+
+    dur_per_slide = 6
+    pmap = {p.get("name", ""): p for p in products}
+    clips = []
 
     for i, sec in enumerate(sections):
         p    = pmap.get(sec.get("product_name", ""), {})
@@ -208,38 +210,51 @@ def build_video(script, products, vo_path, tmp):
         else:
             fallback_img(path, sec.get("product_name", ""))
 
-        base   = ImageClip(path).with_duration(dur).resized((W, H))
+        base   = ImageClip(path).with_duration(dur_per_slide).resized((W, H))
         layers = [base]
         try:
-            layers.append(
-                TextClip(
-                    text=f"#{sec.get('rank', i+1)}  {sec.get('product_name', '')}",
-                    font_size=54, color="white", font="Liberation-Sans-Bold",
-                    stroke_color="black", stroke_width=2,
-                ).with_duration(dur).with_position(("center", H - 180))
-            )
-            layers.append(
-                TextClip(
-                    text=f"EUR {p.get('sale_price', 0):.2f}",
-                    font_size=42, color="#c9a96e", font="Liberation-Sans-Bold",
-                ).with_duration(dur).with_position(("center", H - 110))
-            )
+            layers.append(TextClip(
+                text=f"#{sec.get('rank', i+1)}  {sec.get('product_name', '')}",
+                font_size=54, color="white", font="Liberation-Sans-Bold",
+                stroke_color="black", stroke_width=2,
+            ).with_duration(dur_per_slide).with_position(("center", H - 180)))
+            layers.append(TextClip(
+                text=f"EUR {p.get('sale_price', 0):.2f}",
+                font_size=42, color="#c9a96e", font="Liberation-Sans-Bold",
+            ).with_duration(dur_per_slide).with_position(("center", H - 110)))
             ot = sec.get("onscreen_text", [])
             if ot:
-                layers.append(
-                    TextClip(
-                        text=ot[0][:70], font_size=34,
-                        color="white", font="Liberation-Sans",
-                    ).with_duration(dur).with_position(("center", 70))
-                )
+                layers.append(TextClip(
+                    text=ot[0][:70], font_size=34,
+                    color="white", font="Liberation-Sans",
+                ).with_duration(dur_per_slide).with_position(("center", 70)))
         except Exception as e:
             print(f"  TextClip skip {i}: {e}")
         clips.append(CompositeVideoClip(layers, size=(W, H)))
 
+    video = concatenate_videoclips(clips, method="compose")
+    total_dur = video.duration
+
+    # Zufälligen Musik-Track wählen
+    track_num = random.randint(1, 6)
+    music_path = f"/app/music/Track_{track_num}.mp3"
+    try:
+        music = AudioFileClip(music_path).with_effects(
+            [afx.MultiplyVolume(0.3)]
+        )
+        # Musik auf Video-Länge zuschneiden oder loopen
+        if music.duration < total_dur:
+            loops = int(total_dur / music.duration) + 1
+            from moviepy import concatenate_audioclips
+            music = concatenate_audioclips([music] * loops)
+        music = music.subclipped(0, total_dur)
+        video = video.with_audio(music)
+    except Exception as e:
+        print(f"  Musik skip: {e}")
+
     out = f"{tmp}/final.mp4"
-    concatenate_videoclips(clips, method="compose").with_audio(audio).write_videofile(
-        out, fps=24, codec="libx264", audio_codec="aac", threads=4, logger=None
-    )
+    video.write_videofile(out, fps=24, codec="libx264",
+                          audio_codec="aac", threads=4, logger=None)
     return out
 
 # ── 5: YOUTUBE UPLOAD (OAuth2 Refresh Token) ──
