@@ -79,12 +79,27 @@ PROMPT = (
 )
 
 def generate_script(cfg, products):
+    import unicodedata
+    
+    def clean(text):
+        if not text:
+            return ""
+        # HTML entities und Non-ASCII bereinigen
+        text = text.replace("&amp;", "&").replace("&quot;", '"')
+        text = text.replace("&#39;", "'").replace("&nbsp;", " ")
+        # Nur ASCII behalten
+        text = unicodedata.normalize("NFKD", text)
+        text = text.encode("ascii", "ignore").decode("ascii")
+        return text.strip()
+
     prods = [
-        {"title": p.get("title", ""), "brand": p.get("brand", ""),
+        {"title": clean(p.get("name", "")),
+         "brand": clean(p.get("brand", "")),
          "price": p.get("sale_price", 0),
-         "desc": (p.get("description") or "")[:120]}
+         "desc":  clean((p.get("description") or ""))[:120]}
         for p in products
     ]
+    
     resp = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={"x-api-key": CLAUDE_KEY,
@@ -92,9 +107,10 @@ def generate_script(cfg, products):
                  "content-type": "application/json"},
         json={"model": "claude-sonnet-4-20250514", "max_tokens": 4000,
               "messages": [{"role": "user", "content": PROMPT.format(
-                  topic=cfg["topic"], lang=cfg["lang"],
+                  topic=clean(cfg["topic"]),
+                  lang=cfg["lang"],
                   audience=cfg["audience"],
-                  products_json=json.dumps(prods, ensure_ascii=False))}]},
+                  products_json=json.dumps(prods, ensure_ascii=True))}]},
         timeout=120,
     )
     resp.raise_for_status()
