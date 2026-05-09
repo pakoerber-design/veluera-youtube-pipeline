@@ -14,8 +14,6 @@ from supabase import create_client
 SUPABASE_URL  = os.environ["SUPABASE_URL"]
 SUPABASE_KEY  = os.environ["SUPABASE_SERVICE_KEY"]
 CLAUDE_KEY    = os.environ["ANTHROPIC_API_KEY"]
-EL_KEY        = os.environ["ELEVENLABS_API_KEY"]
-EL_VOICE      = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
 YT_REFRESH    = os.environ["YOUTUBE_REFRESH_TOKEN"]
 YT_CLIENT_ID  = os.environ["YOUTUBE_CLIENT_ID"]
 YT_CLIENT_SEC = os.environ["YOUTUBE_CLIENT_SECRET"]
@@ -81,14 +79,12 @@ PROMPT = (
 
 def generate_script(cfg, products):
     import unicodedata
-    
+
     def clean(text):
         if not text:
             return ""
-        # HTML entities und Non-ASCII bereinigen
         text = text.replace("&amp;", "&").replace("&quot;", '"')
         text = text.replace("&#39;", "'").replace("&nbsp;", " ")
-        # Nur ASCII behalten
         text = unicodedata.normalize("NFKD", text)
         text = text.encode("ascii", "ignore").decode("ascii")
         return text.strip()
@@ -100,7 +96,7 @@ def generate_script(cfg, products):
          "desc":  clean((p.get("description") or ""))[:120]}
         for p in products
     ]
-    
+
     resp = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={"x-api-key": CLAUDE_KEY,
@@ -127,53 +123,7 @@ def generate_script(cfg, products):
                 break
     return json.loads(text)
 
-# ── 3: ELEVENLABS VOICEOVER ───────────────────
-def gen_segment(text, path):
-    r = requests.post(
-        f"https://api.elevenlabs.io/v1/text-to-speech/{EL_VOICE}",
-        headers={"xi-api-key": EL_KEY, "Content-Type": "application/json"},
-        json={"text": text[:2000], "model_id": "eleven_multilingual_v2",
-              "voice_settings": {"stability": 0.4, "similarity_boost": 0.8}},
-        timeout=60,
-    )
-    if r.status_code != 200:
-        print(f"  ElevenLabs {r.status_code}: {r.text[:100]}")
-        return False
-    Path(path).write_bytes(r.content)
-    return True
-
-def build_voiceover(script, tmp):
-    parts = [("intro", f"{script.get('hook','')} {script.get('intro','')}")]
-    for i, s in enumerate(script.get("sections", [])):
-        parts.append((f"p{i}", s.get("voiceover", "")))
-    sp = script.get("surprise_pick") or {}
-    if sp.get("voiceover"):
-        parts.append(("surprise", sp["voiceover"]))
-    if script.get("outro"):
-        parts.append(("outro", script["outro"]))
-
-    segs = []
-    for name, text in parts:
-        if not text.strip():
-            continue
-        p = f"{tmp}/seg_{name}.mp3"
-        if gen_segment(text, p):
-            segs.append(p)
-        time.sleep(0.5)
-
-    if not segs:
-        return None
-    lst = f"{tmp}/list.txt"
-    with open(lst, "w", encoding="utf-8") as f:
-        f.write("\n".join(f"file '{s}'" for s in segs))
-    out = f"{tmp}/vo.mp3"
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, out],
-        capture_output=True,
-    )
-    return out if r.returncode == 0 else None
-
-# ── 4: VIDEO (moviepy 2.x) ────────────────────
+# ── 3: VIDEO (moviepy 2.x) ────────────────────
 def fallback_img(path, title):
     try:
         from PIL import Image, ImageDraw
@@ -192,7 +142,7 @@ def build_video(script, products, tmp):
         return None
 
     dur_per_slide = 6
-    pmap = {p.get("name", ""): p for p in products}
+    pmap  = {p.get("name", ""): p for p in products}
     clips = []
 
     for i, sec in enumerate(sections):
@@ -215,37 +165,34 @@ def build_video(script, products, tmp):
         try:
             layers.append(TextClip(
                 text=f"#{sec.get('rank', i+1)}  {sec.get('product_name', '')}",
-                font_size=54, color="white", font="Liberation-Sans-Bold",
+                font_size=54, color="white", font="DejaVu-Sans-Bold",
                 stroke_color="black", stroke_width=2,
             ).with_duration(dur_per_slide).with_position(("center", H - 180)))
             layers.append(TextClip(
                 text=f"EUR {p.get('sale_price', 0):.2f}",
-                font_size=42, color="#c9a96e", font="Liberation-Sans-Bold",
+                font_size=42, color="#c9a96e", font="DejaVu-Sans-Bold",
             ).with_duration(dur_per_slide).with_position(("center", H - 110)))
             ot = sec.get("onscreen_text", [])
             if ot:
                 layers.append(TextClip(
                     text=ot[0][:70], font_size=34,
-                    color="white", font="Liberation-Sans",
+                    color="white", font="DejaVu-Sans",
                 ).with_duration(dur_per_slide).with_position(("center", 70)))
         except Exception as e:
             print(f"  TextClip skip {i}: {e}")
         clips.append(CompositeVideoClip(layers, size=(W, H)))
 
-    video = concatenate_videoclips(clips, method="compose")
+    video     = concatenate_videoclips(clips, method="compose")
     total_dur = video.duration
 
     # Zufälligen Musik-Track wählen
-    track_num = random.randint(1, 6)
+    track_num  = random.randint(1, 6)
     music_path = f"/app/music/Track_{track_num}.mp3"
     try:
-        music = AudioFileClip(music_path).with_effects(
-            [afx.MultiplyVolume(0.3)]
-        )
-        # Musik auf Video-Länge zuschneiden oder loopen
+        music = AudioFileClip(music_path).with_effects([afx.MultiplyVolume(0.3)])
         if music.duration < total_dur:
-            loops = int(total_dur / music.duration) + 1
             from moviepy import concatenate_audioclips
+            loops = int(total_dur / music.duration) + 1
             music = concatenate_audioclips([music] * loops)
         music = music.subclipped(0, total_dur)
         video = video.with_audio(music)
@@ -257,7 +204,7 @@ def build_video(script, products, tmp):
                           audio_codec="aac", threads=4, logger=None)
     return out
 
-# ── 5: YOUTUBE UPLOAD (OAuth2 Refresh Token) ──
+# ── 4: YOUTUBE UPLOAD ─────────────────────────
 def get_youtube_client():
     creds = Credentials(
         token=None,
@@ -274,7 +221,7 @@ def yt_description(script, products):
     desc = script.get("youtube_description", "") + "\n\n"
     for ch in script.get("chapters", []):
         desc += f"{ch['time']} {ch['title']}\n"
-    desc += "\n Produkte aus diesem Video\n"
+    desc += "\nProdukte aus diesem Video\n"
     for i, p in enumerate(products[:10], 1):
         desc += f"{i}. {p.get('title','')} — EUR {p.get('sale_price',0):.2f}\n"
         desc += f"   {p.get('affiliate_url','')}\n"
@@ -308,7 +255,7 @@ def upload_yt(vid_path, script, products):
             print(f"  Upload {int(st.progress() * 100)}%")
     return resp.get("id")
 
-# ── 6: LOGGING ────────────────────────────────
+# ── 5: LOGGING ────────────────────────────────
 def log_job(cfg, status, **kwargs):
     sb.table("video_jobs").insert({
         "topic":    cfg["topic"],
