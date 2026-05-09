@@ -141,45 +141,117 @@ def build_video(script, products, tmp):
     if not sections:
         return None
 
-    dur_per_slide = 6
-    pmap  = {p.get("name", ""): p for p in products}
+    dur_per_slide = 8
+    FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"
+    FONT_REG = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" \
+               if Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf").exists() \
+               else FONT
+
+    # Produkt-Map: auch nach Teilstring matchen
+    def find_product(name):
+        name_lower = name.lower().strip()
+        for p in products:
+            pn = (p.get("name") or "").lower().strip()
+            if pn == name_lower or name_lower in pn or pn in name_lower:
+                return p
+        return {}
+
     clips = []
-    FONT  = "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"
 
     for i, sec in enumerate(sections):
-        p    = pmap.get(sec.get("product_name", ""), {})
+        product_name = sec.get("product_name", "")
+        p = find_product(product_name)
+
+        # Produktbild laden
         path = f"{tmp}/img{i}.jpg"
+        img_loaded = False
         if p.get("ean"):
             try:
                 r = requests.get(f"{CDN}/{p['ean']}.jpg", timeout=10)
                 if r.status_code == 200:
                     Path(path).write_bytes(r.content)
-                else:
-                    fallback_img(path, sec.get("product_name", ""))
+                    img_loaded = True
             except Exception:
-                fallback_img(path, sec.get("product_name", ""))
-        else:
-            fallback_img(path, sec.get("product_name", ""))
+                pass
+        if not img_loaded:
+            fallback_img(path, product_name)
+
+        # Basis-Bild — als Hintergrund mit dunklem Overlay
+        from PIL import Image, ImageDraw, ImageFilter
+        try:
+            img = Image.open(path).convert("RGB")
+            # Bild zentriert auf 1920x1080 mit dunklem Rand
+            img_ratio = img.width / img.height
+            target_ratio = W / H
+            if img_ratio > target_ratio:
+                new_h = H
+                new_w = int(H * img_ratio)
+            else:
+                new_w = W
+                new_h = int(W / img_ratio)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            # Zentriert croppen
+            left = (new_w - W) // 2
+            top  = (new_h - H) // 2
+            img  = img.crop((left, top, left + W, top + H))
+            # Dunkles Overlay für Lesbarkeit
+            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 140))
+            img = img.convert("RGBA")
+            img = Image.alpha_composite(img, overlay).convert("RGB")
+            img.save(path, "JPEG", quality=90)
+        except Exception as e:
+            print(f"  Bild-Processing skip {i}: {e}")
 
         base   = ImageClip(path).with_duration(dur_per_slide).resized((W, H))
         layers = [base]
+
         try:
+            rank     = sec.get("rank", i + 1)
+            name     = product_name[:50]
+            price    = p.get("sale_price", 0)
+            brand    = p.get("brand", "")
+            desc     = (p.get("description") or "")[:80]
+            onscreen = sec.get("onscreen_text", [])
+
+            # Rang-Badge oben links
             layers.append(TextClip(
-                text=f"#{sec.get('rank', i+1)}  {sec.get('product_name', '')}",
-                font_size=54, color="white", font=FONT,
+                text=f"#{rank}",
+                font_size=80, color="#c9a96e", font=FONT,
+            ).with_duration(dur_per_slide).with_position((60, 60)))
+
+            # Produktname groß unten
+            layers.append(TextClip(
+                text=name,
+                font_size=58, color="white", font=FONT,
                 stroke_color="black", stroke_width=2,
-            ).with_duration(dur_per_slide).with_position(("center", H - 180)))
-            layers.append(TextClip(
-                text=f"EUR {p.get('sale_price', 0):.2f}",
-                font_size=42, color="#c9a96e", font=FONT,
-            ).with_duration(dur_per_slide).with_position(("center", H - 110)))
-            ot = sec.get("onscreen_text", [])
-            if ot:
+            ).with_duration(dur_per_slide).with_position(("center", H - 280)))
+
+            # Brand
+            if brand:
                 layers.append(TextClip(
-                    text=ot[0][:70], font_size=34, color="white", font=FONT,
-                ).with_duration(dur_per_slide).with_position(("center", 70)))
+                    text=brand.upper(),
+                    font_size=30, color="#c9a96e", font=FONT,
+                ).with_duration(dur_per_slide).with_position(("center", H - 210)))
+
+            # Preis
+            if price and price > 0:
+                layers.append(TextClip(
+                    text=f"EUR {price:.2f}",
+                    font_size=44, color="white", font=FONT,
+                    stroke_color="black", stroke_width=1,
+                ).with_duration(dur_per_slide).with_position(("center", H - 155)))
+
+            # Onscreen-Text / Beschreibung
+            info_text = onscreen[0] if onscreen else desc
+            if info_text:
+                layers.append(TextClip(
+                    text=info_text[:80],
+                    font_size=30, color="white", font=FONT_REG,
+                ).with_duration(dur_per_slide).with_position(("center", H - 95)))
+
         except Exception as e:
             print(f"  TextClip skip {i}: {e}")
+
         clips.append(CompositeVideoClip(layers, size=(W, H)))
 
     video     = concatenate_videoclips(clips, method="compose")
@@ -202,7 +274,6 @@ def build_video(script, products, tmp):
     video.write_videofile(out, fps=24, codec="libx264",
                           audio_codec="aac", threads=4, logger=None)
     return out
-
 # ── 4: YOUTUBE UPLOAD ─────────────────────────
 def get_youtube_client():
     creds = Credentials(
