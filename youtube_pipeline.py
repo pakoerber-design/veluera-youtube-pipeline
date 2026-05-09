@@ -325,19 +325,15 @@ def run(cfg):
     try:
         products = select_products(cfg["category"], cfg.get("max_price", 100))
         assert len(products) >= 5, f"Nur {len(products)} Produkte"
-        print(f"  1/5 Produkte: {len(products)}")
+        print(f"  1/4 Produkte: {len(products)}")
 
         script = generate_script(cfg, products)
-        print(f"  2/5 Skript: {script.get('title','')[:55]}")
+        print(f"  2/4 Skript: {script.get('title','')[:55]}")
 
         with tempfile.TemporaryDirectory() as tmp:
-            vo = build_voiceover(script, tmp)
-            assert vo, "Voiceover fehlgeschlagen"
-            print("  3/5 Voiceover OK")
-
-            vid = build_video(script, products, vo, tmp)
+            vid = build_video(script, products, tmp)
             assert vid, "Video fehlgeschlagen"
-            print("  4/5 Video OK")
+            print("  3/4 Video OK")
 
             vid_id = upload_yt(vid, script, products)
             assert vid_id, "Upload fehlgeschlagen"
@@ -346,7 +342,7 @@ def run(cfg):
         log_job(cfg, "done", youtube_id=vid_id, video_url=url,
                 title=script.get("title", ""),
                 published_at=datetime.utcnow().isoformat())
-        print(f"  5/5 Fertig: {url}")
+        print(f"  4/4 Fertig: {url}")
 
     except Exception as e:
         print(f"  FEHLER: {e}")
